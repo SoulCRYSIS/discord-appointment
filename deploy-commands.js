@@ -24,6 +24,20 @@ const commands = [
         .setDescription('Time: HH:MM, "in X minutes", or "in X seconds"')
         .setRequired(true)
     )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('wasteboard')
+    .setDescription('Show time-wasting leaderboard')
+    .addStringOption(option =>
+      option.setName('period')
+        .setDescription('Time period')
+        .setRequired(false)
+        .addChoices(
+          { name: 'All Time', value: 'all' },
+          { name: 'This Month', value: 'month' },
+          { name: 'This Week', value: 'week' }
+        )
+    )
     .toJSON()
 ];
 
