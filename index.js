@@ -119,20 +119,25 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'chronopact') {
-        // Defer IMMEDIATELY before calling handler
-        try {
-          await interaction.deferReply();
-        } catch (err) {
-          console.error('Failed to defer command interaction:', err);
-          return; // Don't continue if defer failed
+        // Check if already deferred/replied to prevent double-defer
+        if (!interaction.deferred && !interaction.replied) {
+          try {
+            await interaction.deferReply();
+          } catch (err) {
+            console.error('Failed to defer command interaction:', err);
+            return; // Don't continue if defer failed
+          }
         }
         await handleAppointmentCommand(interaction);
       } else if (interaction.commandName === 'wasteboard') {
-        try {
-          await interaction.deferReply();
-        } catch (err) {
-          console.error('Failed to defer wasteboard interaction:', err);
-          return;
+        // Check if already deferred/replied to prevent double-defer
+        if (!interaction.deferred && !interaction.replied) {
+          try {
+            await interaction.deferReply();
+          } catch (err) {
+            console.error('Failed to defer wasteboard interaction:', err);
+            return;
+          }
         }
         await handleWasteboardCommand(interaction);
       }
@@ -907,8 +912,6 @@ async function handleWasteboardCommand(interaction) {
       
       embed.addFields({ name: '🏆 Top Time Wasters', value: leaderboardText });
     }
-    
-    embed.addFields({ name: divider, value: '\u200B' });
     
     await interaction.editReply({ embeds: [embed] });
     
