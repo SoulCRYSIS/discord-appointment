@@ -511,7 +511,7 @@ async function generateInsult(absentUsernames) {
     const prompt = `Generate a really aggressive and insulting paragraph in Thai (using street language like "ไอ้สัส", "มึง", "กู", "ส้นตีน", "แม่มึง") to shame these people who promised to play games but didn't come: ${absentUsernames.join(', ')}. Make it funny but harsh, questioning their commitment and wasting everyone's time. Keep it around 3-4 sentences.`;
     
       const completion = await openai.chat.completions.create({
-        model: "gpt-5-nano", // Using GPT-4o-mini (GPT-5 models use different naming)
+        model: "gpt-5",
         messages: [{ role: "user", content: prompt }],
       });
     
