@@ -5,7 +5,7 @@ dotenv.config();
 
 const commands = [
   new SlashCommandBuilder()
-    .setName('appointment')
+    .setName('chronopact')
     .setDescription('Create a game appointment')
     .addStringOption(option =>
       option.setName('game')
@@ -21,7 +21,7 @@ const commands = [
     )
     .addStringOption(option =>
       option.setName('time')
-        .setDescription('Appointment time (format: HH:MM or "in X minutes")')
+        .setDescription('Time: HH:MM, "in X minutes", or "in X seconds"')
         .setRequired(true)
     )
     .toJSON()
