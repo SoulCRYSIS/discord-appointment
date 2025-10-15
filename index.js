@@ -56,7 +56,13 @@ async function handleAppointmentCommand(interaction) {
       .addFields(
         { name: 'Game', value: game, inline: true },
         { name: 'Party Size', value: `0/${partySize}`, inline: true },
-        { name: 'Time', value: appointmentTime.toLocaleString(), inline: true },
+        { name: 'Time', value: appointmentTime.toLocaleString('en-GB', { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        }), inline: true },
         { name: 'Participants', value: 'None yet', inline: false }
       );
     
@@ -138,7 +144,13 @@ async function handleButtonClick(interaction) {
       .addFields(
         { name: 'Game', value: appointment.game, inline: true },
         { name: 'Party Size', value: `${appointment.participants.length}/${appointment.partySize}`, inline: true },
-        { name: 'Time', value: appointment.time.toLocaleString(), inline: true },
+        { name: 'Time', value: appointment.time.toLocaleString('en-GB', { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        }), inline: true },
         { name: 'Participants', value: participantList, inline: false }
       );
     
