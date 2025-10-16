@@ -37,7 +37,11 @@ const client = new Client({
 const appointments = new Map();
 
 // Persistent storage for user statistics
-const STATS_FILE = path.join(process.cwd(), 'user-stats.json');
+const STATS_FILE = path.join(process.cwd(), 'data', 'user-stats.json');
+const DATA_DIR = path.join(process.cwd(), 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 function loadStats() {
   try {
@@ -129,18 +133,29 @@ client.on(Events.InteractionCreate, async interaction => {
           }
         }
         await handleAppointmentCommand(interaction);
-      } else if (interaction.commandName === 'wasteboard') {
-        // Check if already deferred/replied to prevent double-defer
-        if (!interaction.deferred && !interaction.replied) {
-          try {
-            await interaction.deferReply();
-          } catch (err) {
-            console.error('Failed to defer wasteboard interaction:', err);
-            return;
-          }
-        }
-        await handleWasteboardCommand(interaction);
-      }
+       } else if (interaction.commandName === 'wasteboard') {
+         // Check if already deferred/replied to prevent double-defer
+         if (!interaction.deferred && !interaction.replied) {
+           try {
+             await interaction.deferReply();
+           } catch (err) {
+             console.error('Failed to defer wasteboard interaction:', err);
+             return;
+           }
+         }
+         await handleWasteboardCommand(interaction);
+       } else if (interaction.commandName === 'waitboard') {
+         // Check if already deferred/replied to prevent double-defer
+         if (!interaction.deferred && !interaction.replied) {
+           try {
+             await interaction.deferReply();
+           } catch (err) {
+             console.error('Failed to defer waitboard interaction:', err);
+             return;
+           }
+         }
+         await handleWaitboardCommand(interaction);
+       }
     } else if (interaction.isButton()) {
       // Defer IMMEDIATELY before calling handler
       // Check if already deferred/replied to prevent double-defer
@@ -436,10 +451,11 @@ async function showLeaderboard(interaction, appointment) {
     // Sort by join time to calculate wasted time correctly
     const sortedByJoinTime = latenessData.filter(d => d.joinTime).sort((a, b) => a.joinTime - b.joinTime);
     
-    // Calculate wasted time for each person
+    // Calculate wasted time and waiting time for each person
     let totalWastedMinutes = 0;
     sortedByJoinTime.forEach((person, index) => {
       let wastedByThisPerson = 0;
+      let waitingTimeForOthers = 0;
       
       // For each person who arrived before this person
       for (let i = 0; i < index; i++) {
@@ -447,6 +463,13 @@ async function showLeaderboard(interaction, appointment) {
         // Calculate how long the earlier person had to wait for this person
         const waitTime = Math.floor((person.joinTime - earlierPerson.joinTime) / 60000);
         wastedByThisPerson += waitTime;
+      }
+      
+      // Calculate how long this person waited for the last person to join
+      if (sortedByJoinTime.length > 0) {
+        const lastPerson = sortedByJoinTime[sortedByJoinTime.length - 1];
+        // This person waited from their join time until the last person joined
+        waitingTimeForOthers = Math.floor((lastPerson.joinTime - person.joinTime) / 60000);
       }
       
       totalWastedMinutes += wastedByThisPerson;
@@ -460,6 +483,7 @@ async function showLeaderboard(interaction, appointment) {
         date: new Date().toISOString(),
         wastedMinutes: wastedByThisPerson,
         lateMinutes: person.lateMinutes,
+        waitingMinutes: waitingTimeForOthers, // Add waiting time for others
         game: appointment.game
       });
     });
@@ -898,7 +922,7 @@ async function handleWasteboardCommand(interaction) {
     const embed = new EmbedBuilder()
       .setColor('#FF0000')
       .setTitle(`⏱️ Time Waster Leaderboard - ${periodName}`)
-      .setDescription('Hall of Shame: People who waste others\' time')
+      .setDescription('Congratulations, you wasted so much time, suckers')
       .setTimestamp();
     
     if (leaderboard.length === 0) {
@@ -918,6 +942,134 @@ async function handleWasteboardCommand(interaction) {
   } catch (error) {
     console.error('Error in wasteboard command:', error);
     await interaction.editReply({ content: '❌ Error showing leaderboard!' });
+  }
+}
+
+async function handleWaitboardCommand(interaction) {
+  try {
+    const period = interaction.options.getString('period') || 'all';
+    
+    // Calculate date range based on period
+    const now = new Date();
+    let startDate;
+    
+    switch (period) {
+      case 'week':
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case 'month':
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        break;
+      default:
+        startDate = new Date(0); // All time
+    }
+    
+    // Calculate waiting time for each user
+    const waitingStats = {};
+    
+    for (const [userId, stats] of Object.entries(userStats)) {
+      const filteredIncidents = stats.incidents.filter(incident => 
+        new Date(incident.date) >= startDate
+      );
+      
+      if (filteredIncidents.length > 0) {
+        // Calculate total waiting time for this user
+        // Use the waitingMinutes field that we now store in incidents
+        let totalWaitingMinutes = 0;
+        
+        for (const incident of filteredIncidents) {
+          // Use the waitingMinutes field if it exists, otherwise fall back to lateMinutes
+          if (incident.waitingMinutes !== undefined) {
+            totalWaitingMinutes += incident.waitingMinutes;
+          } else if (incident.lateMinutes !== Infinity) {
+            // Fallback for old data: use lateMinutes as waiting time
+            totalWaitingMinutes += incident.lateMinutes;
+          }
+        }
+        
+        waitingStats[userId] = {
+          ...stats,
+          incidents: filteredIncidents,
+          totalWaitingMinutes: totalWaitingMinutes,
+          totalWastedMinutes: filteredIncidents.reduce((sum, incident) => sum + incident.wastedMinutes, 0)
+        };
+      }
+    }
+    
+    // Sort by total waiting time (most patient first)
+    const sortedUsers = Object.entries(waitingStats)
+      .filter(([, stats]) => stats.totalWaitingMinutes > 0) // Only show users who actually waited
+      .sort(([,a], [,b]) => b.totalWaitingMinutes - a.totalWaitingMinutes)
+      .slice(0, 10);
+    
+    if (sortedUsers.length === 0) {
+      await interaction.editReply({
+        embeds: [{
+          color: 0x4CAF50,
+          title: '⏰ Patience Leaderboard',
+          description: `No waiting data found for ${period === 'all' ? 'all time' : period}.`,
+          fields: [
+            {
+              name: 'Period',
+              value: period === 'all' ? 'All Time' : period.charAt(0).toUpperCase() + period.slice(1),
+              inline: true
+            }
+          ]
+        }]
+      });
+      return;
+    }
+    
+    // Create leaderboard embed
+    const leaderboardText = sortedUsers.map(([userId, stats], index) => {
+      const user = client.users.cache.get(userId);
+      const displayName = user ? user.displayName : `User ${userId}`;
+      const hours = Math.floor(stats.totalWaitingMinutes / 60);
+      const minutes = stats.totalWaitingMinutes % 60;
+      const timeStr = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+      
+      const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
+      
+      return `${medal} **${displayName}** - ${timeStr} (${stats.incidents.length} incidents)`;
+    }).join('\n');
+    
+    const totalWaitingTime = sortedUsers.reduce((sum, [, stats]) => sum + stats.totalWaitingMinutes, 0);
+    const totalHours = Math.floor(totalWaitingTime / 60);
+    const totalMinutes = totalWaitingTime % 60;
+    const totalTimeStr = totalHours > 0 ? `${totalHours}h ${totalMinutes}m` : `${totalMinutes}m`;
+    
+    await interaction.editReply({
+      embeds: [{
+        color: 0x4CAF50,
+        title: '⏰ Patience Leaderboard',
+        description: leaderboardText,
+        fields: [
+          {
+            name: 'Period',
+            value: period === 'all' ? 'All Time' : period.charAt(0).toUpperCase() + period.slice(1),
+            inline: true
+          },
+          {
+            name: 'Total Waiting Time',
+            value: totalTimeStr,
+            inline: true
+          },
+          {
+            name: 'Total Incidents',
+            value: sortedUsers.reduce((sum, [, stats]) => sum + stats.incidents.length, 0).toString(),
+            inline: true
+          }
+        ],
+        footer: {
+          text: 'Higher numbers = more time patiently waiting for others'
+        }
+      }]
+    });
+  } catch (error) {
+    console.error('Error in waitboard command:', error);
+    await interaction.editReply({
+      content: '❌ Error generating waitboard. Please try again later.'
+    });
   }
 }
 
