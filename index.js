@@ -29,7 +29,8 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers
   ]
 });
 
@@ -65,22 +66,25 @@ function saveStats(stats) {
 
 let userStats = loadStats(); // { userId: { totalWastedMinutes: 0, incidents: [], weeklyWaste: 0, monthlyWaste: 0 } }
 
-client.once(Events.ClientReady, () => {
+client.once(Events.ClientReady, async () => {
   console.log(`✅ Bot is ready! Logged in as ${client.user.tag}`);
-  
+
   // Start the appointment reminder scheduler
   startAppointmentScheduler();
+
+  // Setup console commands
+  await setupConsoleCommands();
 });
 
 // Listen for voice state changes (when users join/leave voice channels)
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   try {
     const userId = newState.id;
-    
+
     // Check if user joined a voice channel
     if (!oldState.channel && newState.channel) {
       console.log(`🎤 User ${newState.member.user.username} joined voice channel: ${newState.channel.name}`);
-      
+
       // Check all active appointments
       for (const [messageId, appointment] of appointments.entries()) {
         // If this user is a participant and hasn't been marked present yet
@@ -91,25 +95,25 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
             appointment.presentUsers.push(userId);
             appointment.joinTimes[userId] = new Date().toISOString();
             console.log(`✅ Marked ${newState.member.user.username} as present for ${appointment.game}`);
-            
-                  // Check if everyone is present AND party is full
-                  if (appointment.presentUsers.length === appointment.participants.length && 
-                      appointment.participants.length >= appointment.partySize) {
-                    console.log('🎉 All participants are present and party is full! Showing leaderboard...');
-                    
-                    const channel = await client.channels.fetch(appointment.channelId);
-                    if (channel && channel.isTextBased()) {
-                      const fakeInteraction = {
-                        client,
-                        guildId: appointment.guildId,
-                        editReply: async (options) => {
-                          await channel.send(options);
-                        }
-                      };
-                      await showLeaderboard(fakeInteraction, appointment);
-                      appointments.delete(messageId);
-                    }
+
+            // Check if everyone is present AND party is full
+            if (appointment.presentUsers.length === appointment.participants.length &&
+              appointment.participants.length >= appointment.partySize) {
+              console.log('🎉 All participants are present and party is full! Showing leaderboard...');
+
+              const channel = await client.channels.fetch(appointment.channelId);
+              if (channel && channel.isTextBased()) {
+                const fakeInteraction = {
+                  client,
+                  guildId: appointment.guildId,
+                  editReply: async (options) => {
+                    await channel.send(options);
                   }
+                };
+                await showLeaderboard(fakeInteraction, appointment);
+                appointments.delete(messageId);
+              }
+            }
           }
         }
       }
@@ -133,29 +137,29 @@ client.on(Events.InteractionCreate, async interaction => {
           }
         }
         await handleAppointmentCommand(interaction);
-       } else if (interaction.commandName === 'wasteboard') {
-         // Check if already deferred/replied to prevent double-defer
-         if (!interaction.deferred && !interaction.replied) {
-           try {
-             await interaction.deferReply();
-           } catch (err) {
-             console.error('Failed to defer wasteboard interaction:', err);
-             return;
-           }
-         }
-         await handleWasteboardCommand(interaction);
-       } else if (interaction.commandName === 'waitboard') {
-         // Check if already deferred/replied to prevent double-defer
-         if (!interaction.deferred && !interaction.replied) {
-           try {
-             await interaction.deferReply();
-           } catch (err) {
-             console.error('Failed to defer waitboard interaction:', err);
-             return;
-           }
-         }
-         await handleWaitboardCommand(interaction);
-       }
+      } else if (interaction.commandName === 'wasteboard') {
+        // Check if already deferred/replied to prevent double-defer
+        if (!interaction.deferred && !interaction.replied) {
+          try {
+            await interaction.deferReply();
+          } catch (err) {
+            console.error('Failed to defer wasteboard interaction:', err);
+            return;
+          }
+        }
+        await handleWasteboardCommand(interaction);
+      } else if (interaction.commandName === 'waitboard') {
+        // Check if already deferred/replied to prevent double-defer
+        if (!interaction.deferred && !interaction.replied) {
+          try {
+            await interaction.deferReply();
+          } catch (err) {
+            console.error('Failed to defer waitboard interaction:', err);
+            return;
+          }
+        }
+        await handleWaitboardCommand(interaction);
+      }
     } else if (interaction.isButton()) {
       // Defer IMMEDIATELY before calling handler
       // Check if already deferred/replied to prevent double-defer
@@ -180,17 +184,17 @@ async function handleAppointmentCommand(interaction) {
     const game = interaction.options.getString('game');
     const partySize = interaction.options.getInteger('party_size');
     const timeInput = interaction.options.getString('time');
-    
+
     // Parse time
     let appointmentTime;
     if (timeInput.startsWith('in ')) {
       const timeStr = timeInput.replace('in ', '');
-      
+
       // Check if it's seconds
       if (timeStr.includes('second')) {
         const seconds = parseInt(timeStr.replace(' seconds', '').replace(' second', ''));
         appointmentTime = new Date(Date.now() + seconds * 1000);
-      } 
+      }
       // Check if it's minutes
       else {
         const minutes = parseInt(timeStr.replace(' minutes', '').replace(' minute', ''));
@@ -204,12 +208,12 @@ async function handleAppointmentCommand(interaction) {
         appointmentTime.setDate(appointmentTime.getDate() + 1);
       }
     }
-    
+
     if (appointmentTime <= new Date()) {
       await interaction.editReply({ content: '❌ Time must be in the future!' });
       return;
     }
-    
+
     // Create embed
     const embed = new EmbedBuilder()
       .setColor('#5865F2')
@@ -217,16 +221,18 @@ async function handleAppointmentCommand(interaction) {
       .addFields(
         { name: 'Game', value: game, inline: true },
         { name: 'Party Size', value: `0/${partySize}`, inline: true },
-        { name: 'Time', value: appointmentTime.toLocaleString('en-GB', { 
-          hour: '2-digit', 
-          minute: '2-digit',
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric'
-        }), inline: true },
+        {
+          name: 'Time', value: appointmentTime.toLocaleString('en-GB', {
+            hour: '2-digit',
+            minute: '2-digit',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+          }), inline: true
+        },
         { name: 'Participants', value: 'None yet', inline: false }
       );
-    
+
     // Create buttons
     const row = new ActionRowBuilder()
       .addComponents(
@@ -243,10 +249,10 @@ async function handleAppointmentCommand(interaction) {
           .setLabel('Cancel')
           .setStyle(ButtonStyle.Secondary)
       );
-    
+
     // Edit the deferred reply with the appointment
     const message = await interaction.editReply({ embeds: [embed], components: [row] });
-    
+
     // Store appointment using the message ID
     appointments.set(message.id, {
       game,
@@ -260,14 +266,14 @@ async function handleAppointmentCommand(interaction) {
       joinTimes: {}, // Track when each user joined voice { userId: timestamp }
       cancelled: false
     });
-    
+
     console.log(`Stored appointment with message ID: ${message.id}`);
-    
+
   } catch (error) {
     console.error('Error in appointment command:', error);
     try {
       if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ content: '❌ Error creating appointment!' }).catch(() => {});
+        await interaction.editReply({ content: '❌ Error creating appointment!' }).catch(() => { });
       }
     } catch (replyError) {
       console.error('Failed to send error message:', replyError);
@@ -280,27 +286,27 @@ async function handleButtonClick(interaction) {
     // Already deferred in the main handler
     console.log(`Looking for appointment with message ID: ${interaction.message.id}`);
     console.log(`Available appointments:`, Array.from(appointments.keys()));
-    
+
     const appointment = appointments.get(interaction.message.id);
     if (!appointment) {
       await interaction.followUp({ content: '❌ Appointment not found!', ephemeral: true });
       return;
     }
-    
+
     const userId = interaction.user.id;
     const customId = interaction.customId;
-    
+
     let responseMessage = '';
-    
+
     if (customId === 'cancel') {
       // Only allow cancellation by participants
       if (!appointment.participants.includes(userId)) {
         await interaction.followUp({ content: '⚠️ Only participants can cancel!', ephemeral: true });
         return;
       }
-      
+
       appointment.cancelled = true;
-      
+
       // Only show leaderboard if at least one person joined voice
       if (Object.keys(appointment.joinTimes).length > 0) {
         await showLeaderboard(interaction, appointment);
@@ -312,13 +318,13 @@ async function handleButtonClick(interaction) {
           .setDescription(`**${appointment.game}** appointment has been cancelled.`)
           .addFields({ name: 'Reason', value: 'No one joined voice channel' })
           .setTimestamp();
-        
+
         await interaction.editReply({ embeds: [embed], components: [] });
       }
-      
+
       appointments.delete(interaction.message.id);
       return;
-      
+
     } else if (customId === 'join') {
       if (appointment.participants.includes(userId)) {
         await interaction.followUp({ content: '⚠️ You already joined!', ephemeral: true });
@@ -336,28 +342,30 @@ async function handleButtonClick(interaction) {
       delete appointment.presentUsers[appointment.presentUsers.indexOf(userId)];
       responseMessage = '';
     }
-    
+
     // Update the message with new participant list
-    const participantList = appointment.participants.length > 0 
+    const participantList = appointment.participants.length > 0
       ? appointment.participants.map(id => `<@${id}>`).join(', ')
       : 'None yet';
-    
+
     const embed = new EmbedBuilder()
       .setColor('#5865F2')
       .setTitle('🎮 Game Appointment')
       .addFields(
         { name: 'Game', value: appointment.game, inline: true },
         { name: 'Party Size', value: `${appointment.participants.length}/${appointment.partySize}`, inline: true },
-        { name: 'Time', value: appointment.time.toLocaleString('en-GB', { 
-          hour: '2-digit', 
-          minute: '2-digit',
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric'
-        }), inline: true },
+        {
+          name: 'Time', value: appointment.time.toLocaleString('en-GB', {
+            hour: '2-digit',
+            minute: '2-digit',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+          }), inline: true
+        },
         { name: 'Participants', value: participantList, inline: false }
       );
-    
+
     const row = new ActionRowBuilder()
       .addComponents(
         new ButtonBuilder()
@@ -373,20 +381,20 @@ async function handleButtonClick(interaction) {
           .setLabel('Cancel')
           .setStyle(ButtonStyle.Secondary)
       );
-    
+
     // Update the original message
     await interaction.editReply({ embeds: [embed], components: [row] });
-    
+
     // Send ephemeral response
     if (responseMessage !== '') {
       await interaction.followUp({ content: responseMessage, ephemeral: true });
     }
-    
+
   } catch (error) {
     console.error('Error handling button click:', error);
     try {
       if (interaction.deferred || interaction.replied) {
-        await interaction.followUp({ content: '❌ Error processing request!', ephemeral: true }).catch(() => {});
+        await interaction.followUp({ content: '❌ Error processing request!', ephemeral: true }).catch(() => { });
       }
     } catch (replyError) {
       console.error('Failed to send error message:', replyError);
@@ -412,20 +420,20 @@ async function showLeaderboard(interaction, appointment) {
   try {
     const guild = await interaction.client.guilds.fetch(appointment.guildId);
     const appointmentTime = new Date(appointment.time);
-    
+
     // Calculate lateness for each participant
     const latenessData = [];
-    
+
     for (const userId of appointment.participants) {
       try {
         const member = await guild.members.fetch(userId);
         const username = member.user.username;
         const displayName = nameMapping[username] || username;
-        
+
         if (appointment.joinTimes[userId]) {
           const joinTime = new Date(appointment.joinTimes[userId]);
           const lateMinutes = Math.max(0, Math.floor((joinTime - appointmentTime) / 60000));
-          
+
           latenessData.push({
             userId,
             displayName,
@@ -447,16 +455,16 @@ async function showLeaderboard(interaction, appointment) {
         console.error(`Error fetching member ${userId}:`, err);
       }
     }
-    
+
     // Sort by join time to calculate wasted time correctly
     const sortedByJoinTime = latenessData.filter(d => d.joinTime).sort((a, b) => a.joinTime - b.joinTime);
-    
+
     // Calculate wasted time and waiting time for each person
     let totalWastedMinutes = 0;
     sortedByJoinTime.forEach((person, index) => {
       let wastedByThisPerson = 0;
       let waitingTimeForOthers = 0;
-      
+
       // For each person who arrived before this person
       for (let i = 0; i < index; i++) {
         const earlierPerson = sortedByJoinTime[i];
@@ -464,16 +472,16 @@ async function showLeaderboard(interaction, appointment) {
         const waitTime = Math.floor((person.joinTime - earlierPerson.joinTime) / 60000);
         wastedByThisPerson += waitTime;
       }
-      
+
       // Calculate how long this person waited for the last person to join
       if (sortedByJoinTime.length > 0) {
         const lastPerson = sortedByJoinTime[sortedByJoinTime.length - 1];
         // This person waited from their join time until the last person joined
         waitingTimeForOthers = Math.floor((lastPerson.joinTime - person.joinTime) / 60000);
       }
-      
+
       totalWastedMinutes += wastedByThisPerson;
-      
+
       // Update user stats
       if (!userStats[person.userId]) {
         userStats[person.userId] = { totalWastedMinutes: 0, incidents: [], weeklyWaste: 0, monthlyWaste: 0 };
@@ -487,17 +495,17 @@ async function showLeaderboard(interaction, appointment) {
         game: appointment.game
       });
     });
-    
+
     // Sort by lateness (latest to earliest - most late first)
     latenessData.sort((a, b) => b.lateMinutes - a.lateMinutes);
-    
+
     // Create leaderboard embed
     const embed = new EmbedBuilder()
       .setColor('#FF6B6B')
       .setTitle(`📊 ${appointment.game} - Attendance Report`)
       .setDescription(appointment.cancelled ? '❌ **Appointment Cancelled**' : '✅ **All Present**')
       .setTimestamp();
-    
+
     let leaderboardText = '';
     latenessData.forEach((data, index) => {
       const position = `${index + 1}.`;
@@ -509,21 +517,21 @@ async function showLeaderboard(interaction, appointment) {
         leaderboardText += `${position} **${data.displayName}** - 🕐 ${data.lateMinutes} min late\n`;
       }
     });
-    
+
     embed.addFields({ name: '👥 Attendance Ranking', value: leaderboardText || 'No data' });
-    
+
     if (totalWastedMinutes > 0) {
-      embed.addFields({ 
-        name: '⏱️ Total Time Wasted', 
-        value: `${totalWastedMinutes} minutes of collective waiting time` 
+      embed.addFields({
+        name: '⏱️ Total Time Wasted',
+        value: `${totalWastedMinutes} minutes of collective waiting time`
       });
     }
-    
+
     // Save stats
     saveStats(userStats);
-    
+
     await interaction.editReply({ embeds: [embed], components: [] });
-    
+
   } catch (error) {
     console.error('Error showing leaderboard:', error);
   }
@@ -538,12 +546,12 @@ async function generateInsult(absentUsernames) {
 
   try {
     const prompt = `Generate a really aggressive and insulting paragraph in Thai (using street language like "ไอ้สัส", "มึง", "กู", "ส้นตีน", "แม่มึง") to shame these people who promised to play games but didn't come: ${absentUsernames.join(', ')}. Make it funny but harsh, questioning their commitment and wasting everyone's time. Keep it around 3-4 sentences.`;
-    
-      const completion = await openai.chat.completions.create({
-        model: "gpt-5",
-        messages: [{ role: "user", content: prompt }],
-      });
-    
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-5",
+      messages: [{ role: "user", content: prompt }],
+    });
+
     return completion.choices[0].message.content;
   } catch (error) {
     console.error('Error generating insult:', error);
@@ -556,23 +564,23 @@ function startAppointmentScheduler() {
   // Check every minute for appointments that are due and shame checks
   cron.schedule('* * * * *', async () => {
     const now = new Date();
-    
+
     for (const [messageId, appointment] of appointments.entries()) {
       if (appointment.time <= now && !appointment.notified) {
         // Mark as notified
         appointment.notified = true;
-        
+
         // Check if party is full
         const isFullParty = appointment.participants.length >= appointment.partySize;
-        
+
         let notification;
-        
+
         if (isFullParty) {
           // Full party - send aggressive message and tag everyone
           const randomMessage = aggressiveMessages[Math.floor(Math.random() * aggressiveMessages.length)];
           const mentions = appointment.participants.map(id => `<@${id}>`).join(' ');
-          
-          notification = `${randomMessage}\n\n**${appointment.game}** appointment is NOW!\n${divider}`;
+
+          notification = `${randomMessage}\n\n${mentions}\n**${appointment.game}** appointment is NOW!\n${divider}`;
         } else {
           // Not full party - show cancellation message
           const sadMessages = [
@@ -588,9 +596,9 @@ function startAppointmentScheduler() {
             "😔 Not a full house... what a letdown... 😔",
             "😔 Lame jobber... 😔"
           ];
-          
+
           const randomSadMessage = sadMessages[Math.floor(Math.random() * sadMessages.length)];
-          
+
           // Create cancellation embed
           const embed = new EmbedBuilder()
             .setColor('#808080')
@@ -602,7 +610,7 @@ function startAppointmentScheduler() {
               { name: 'Message', value: randomSadMessage }
             )
             .setTimestamp();
-          
+
           // Update the original appointment message with cancellation
           try {
             const channel = await client.channels.fetch(appointment.channelId);
@@ -620,14 +628,14 @@ function startAppointmentScheduler() {
           } catch (error) {
             console.error('Error updating appointment message:', error);
           }
-          
+
           // Mark as cancelled and save wasted time stats
           appointment.cancelled = true;
           await saveWastedTimeForCancelledAppointment(appointment);
           appointments.delete(messageId);
           continue; // Skip to next appointment
         }
-        
+
         // Send new message for full party notification (don't replace original)
         try {
           const channel = await client.channels.fetch(appointment.channelId);
@@ -639,7 +647,7 @@ function startAppointmentScheduler() {
           }
         } catch (error) {
           console.error('Error sending appointment notification:', error);
-          
+
           // Check if it's a permission error
           if (error.code === 50001) {
             console.error(`
@@ -658,7 +666,7 @@ Please check:
             appointments.delete(messageId);
             return;
           }
-          
+
           // Try to send a simple message instead
           try {
             const channel = client.channels.cache.get(appointment.channelId);
@@ -670,14 +678,14 @@ Please check:
           }
         }
       }
-      
+
       // Auto-cancel if no one joined and 30 minutes passed
       const timeSinceAppointment = now - new Date(appointment.time);
       const minutesSince = Math.floor(timeSinceAppointment / 60000);
-      
+
       if (minutesSince >= 30 && appointment.participants.length === 0) {
         console.log(`❌ Auto-cancelling ${appointment.game} - no one joined after 30 minutes`);
-        
+
         try {
           const channel = await client.channels.fetch(appointment.channelId);
           if (channel && channel.isTextBased()) {
@@ -690,7 +698,7 @@ Please check:
                 { name: 'Participants', value: '0' }
               )
               .setTimestamp();
-            
+
             try {
               const message = await channel.messages.fetch(messageId);
               await message.edit({ content: null, embeds: [embed], components: [] });
@@ -702,15 +710,15 @@ Please check:
         } catch (error) {
           console.error('Error sending no-participant cancellation:', error);
         }
-        
+
         await saveWastedTimeForCancelledAppointment(appointment);
         appointments.delete(messageId);
         continue;
       }
-      
+
       // Check for absent users after 5, 10, and 15 minutes
 
-      
+
       // Check at 5, 10, and 15 minutes
       const checkPoints = [
         { minutes: 5, key: '5min' },
@@ -720,64 +728,64 @@ Please check:
         { minutes: 45, key: '45min' },
         { minutes: 60, key: '60min' },
       ];
-      
+
       for (const checkpoint of checkPoints) {
         if (minutesSince >= checkpoint.minutes && !appointment.shameChecks[checkpoint.key] && !appointment.cancelled) {
           appointment.shameChecks[checkpoint.key] = true;
-          
+
           try {
             // Get the guild
             const guild = await client.guilds.fetch(appointment.guildId);
-            
+
             // First, check who's currently in voice and mark them as present
             for (const userId of appointment.participants) {
               try {
                 const member = await guild.members.fetch(userId);
-                
+
                 // If user is in voice channel and not already marked as present
                 if (member.voice.channel && !appointment.presentUsers.includes(userId)) {
                   appointment.presentUsers.push(userId);
                   appointment.joinTimes[userId] = new Date().toISOString();
                   console.log(`✅ Marked user ${member.user.username} as present at ${appointment.joinTimes[userId]}`);
-                  
-            // Check if everyone is present AND party is full
-            if (appointment.presentUsers.length === appointment.participants.length && 
-                appointment.participants.length >= appointment.partySize) {
-              console.log('🎉 All participants are present and party is full! Showing leaderboard...');
-              // Show leaderboard when everyone arrives
-              const channel = await client.channels.fetch(appointment.channelId);
-              if (channel && channel.isTextBased()) {
-                // Create a fake interaction for leaderboard
-                const fakeInteraction = {
-                  client,
-                  guildId: appointment.guildId,
-                  editReply: async (options) => {
-                    await channel.send(options);
+
+                  // Check if everyone is present AND party is full
+                  if (appointment.presentUsers.length === appointment.participants.length &&
+                    appointment.participants.length >= appointment.partySize) {
+                    console.log('🎉 All participants are present and party is full! Showing leaderboard...');
+                    // Show leaderboard when everyone arrives
+                    const channel = await client.channels.fetch(appointment.channelId);
+                    if (channel && channel.isTextBased()) {
+                      // Create a fake interaction for leaderboard
+                      const fakeInteraction = {
+                        client,
+                        guildId: appointment.guildId,
+                        editReply: async (options) => {
+                          await channel.send(options);
+                        }
+                      };
+                      await showLeaderboard(fakeInteraction, appointment);
+                      appointments.delete(messageId);
+                    }
                   }
-                };
-                await showLeaderboard(fakeInteraction, appointment);
-                appointments.delete(messageId);
-              }
-            }
                 }
               } catch (err) {
                 console.error(`Error fetching member ${userId}:`, err);
               }
             }
-            
+
             // Now check for absent users (only those who haven't been marked as present)
             const absentUsers = [];
             const absentUserIds = [];
-            
+
             for (const userId of appointment.participants) {
               // Skip users who have already been marked as present
               if (appointment.presentUsers.includes(userId)) {
                 continue;
               }
-              
+
               try {
                 const member = await guild.members.fetch(userId);
-                
+
                 // Only shame if they're still not in voice
                 if (!member.voice.channel) {
                   const username = member.user.username;
@@ -790,14 +798,14 @@ Please check:
                 console.error(`Error fetching member ${userId}:`, err);
               }
             }
-            
+
             // If there are absent users, shame them!
             if (absentUsers.length > 0) {
               const insult = await generateInsult(absentUsers);
               const mentions = absentUserIds.map(id => `<@${id}>`).join(' ');
-              
+
               const shameMessage = `🔔 **${checkpoint.minutes} minutes passed!**\n${mentions}\n${insult}\n${divider}`;
-              
+
               const channel = await client.channels.fetch(appointment.channelId);
               if (channel && channel.isTextBased()) {
                 await channel.send(shameMessage);
@@ -813,7 +821,7 @@ Please check:
       }
     }
   });
-  
+
   console.log('⏰ Appointment scheduler started - checking every minute');
 }
 
@@ -824,30 +832,30 @@ async function saveWastedTimeForCancelledAppointment(appointment) {
       console.log(`⏭️ Skipping wasted time tracking - party was not full (${appointment.participants.length}/${appointment.partySize})`);
       return;
     }
-    
+
     const guild = await client.guilds.fetch(appointment.guildId);
     const appointmentTime = new Date(appointment.time);
     const now = new Date();
-    
+
     // Calculate wasted time for participants who joined but never showed up in voice
     for (const userId of appointment.participants) {
       if (!appointment.joinTimes[userId]) {
         // This person joined the appointment but never showed up in voice
         try {
           const member = await guild.members.fetch(userId);
-          
+
           // Calculate how long they wasted: from appointment time to now
           const minutesWasted = Math.floor((now - appointmentTime) / 60000);
-          
+
           // They wasted time for everyone who DID show up
           const peopleWhoShowedUp = Object.keys(appointment.joinTimes).length;
           const totalWasted = minutesWasted * peopleWhoShowedUp;
-          
+
           if (totalWasted > 0) {
             if (!userStats[userId]) {
               userStats[userId] = { totalWastedMinutes: 0, incidents: [] };
             }
-            
+
             userStats[userId].totalWastedMinutes += totalWasted;
             userStats[userId].incidents.push({
               date: new Date().toISOString(),
@@ -855,7 +863,7 @@ async function saveWastedTimeForCancelledAppointment(appointment) {
               lateMinutes: minutesWasted,
               game: appointment.game
             });
-            
+
             console.log(`💾 Saved ${totalWasted} min wasted by ${member.user.username} (no-show for ${appointment.game})`);
           }
         } catch (err) {
@@ -863,7 +871,7 @@ async function saveWastedTimeForCancelledAppointment(appointment) {
         }
       }
     }
-    
+
     // Save stats to file
     saveStats(userStats);
   } catch (error) {
@@ -875,23 +883,23 @@ async function handleWasteboardCommand(interaction) {
   try {
     const period = interaction.options.getString('period') || 'all';
     const guild = await interaction.guild.fetch();
-    
+
     const now = new Date();
     const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
     const monthAgo = new Date(now.getFullYear(), now.getMonth(), 1);
-    
+
     // Calculate stats based on period
     const leaderboard = [];
-    
+
     for (const [userId, stats] of Object.entries(userStats)) {
       try {
         const member = await guild.members.fetch(userId);
         const username = member.user.username;
         const displayName = nameMapping[username] || username;
-        
+
         let wastedMinutes = 0;
         let incidents = 0;
-        
+
         if (period === 'all') {
           wastedMinutes = stats.totalWastedMinutes;
           incidents = stats.incidents.length;
@@ -905,7 +913,7 @@ async function handleWasteboardCommand(interaction) {
             }
           });
         }
-        
+
         if (wastedMinutes > 0) {
           leaderboard.push({ displayName, wastedMinutes, incidents });
         }
@@ -913,18 +921,18 @@ async function handleWasteboardCommand(interaction) {
         console.error(`Error fetching member ${userId}:`, err);
       }
     }
-    
+
     // Sort by wasted minutes
     leaderboard.sort((a, b) => b.wastedMinutes - a.wastedMinutes);
-    
+
     const periodName = period === 'all' ? 'All Time' : period === 'week' ? 'This Week' : 'This Month';
-    
+
     const embed = new EmbedBuilder()
       .setColor('#FF0000')
       .setTitle(`⏱️ Time Waster Leaderboard - ${periodName}`)
       .setDescription('Congratulations, you wasted so much time, suckers')
       .setTimestamp();
-    
+
     if (leaderboard.length === 0) {
       embed.addFields({ name: 'No Data', value: 'No time wasted yet! 🎉' });
     } else {
@@ -933,12 +941,12 @@ async function handleWasteboardCommand(interaction) {
         const medal = index === 0 ? '💩' : index === 1 ? '🤡' : index === 2 ? '🐌' : `${index + 1}.`;
         leaderboardText += `${medal} **${entry.displayName}** - ${entry.wastedMinutes} min wasted (${entry.incidents} times)\n`;
       });
-      
+
       embed.addFields({ name: '🏆 Top Time Wasters', value: leaderboardText });
     }
-    
+
     await interaction.editReply({ embeds: [embed] });
-    
+
   } catch (error) {
     console.error('Error in wasteboard command:', error);
     await interaction.editReply({ content: '❌ Error showing leaderboard!' });
@@ -948,11 +956,11 @@ async function handleWasteboardCommand(interaction) {
 async function handleWaitboardCommand(interaction) {
   try {
     const period = interaction.options.getString('period') || 'all';
-    
+
     // Calculate date range based on period
     const now = new Date();
     let startDate;
-    
+
     switch (period) {
       case 'week':
         startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -963,20 +971,20 @@ async function handleWaitboardCommand(interaction) {
       default:
         startDate = new Date(0); // All time
     }
-    
+
     // Calculate waiting time for each user
     const waitingStats = {};
-    
+
     for (const [userId, stats] of Object.entries(userStats)) {
-      const filteredIncidents = stats.incidents.filter(incident => 
+      const filteredIncidents = stats.incidents.filter(incident =>
         new Date(incident.date) >= startDate
       );
-      
+
       if (filteredIncidents.length > 0) {
         // Calculate total waiting time for this user
         // Use the waitingMinutes field that we now store in incidents
         let totalWaitingMinutes = 0;
-        
+
         for (const incident of filteredIncidents) {
           // Use the waitingMinutes field if it exists, otherwise fall back to lateMinutes
           if (incident.waitingMinutes !== undefined) {
@@ -986,7 +994,7 @@ async function handleWaitboardCommand(interaction) {
             totalWaitingMinutes += incident.lateMinutes;
           }
         }
-        
+
         waitingStats[userId] = {
           ...stats,
           incidents: filteredIncidents,
@@ -995,13 +1003,13 @@ async function handleWaitboardCommand(interaction) {
         };
       }
     }
-    
+
     // Sort by total waiting time (most patient first)
     const sortedUsers = Object.entries(waitingStats)
       .filter(([, stats]) => stats.totalWaitingMinutes > 0) // Only show users who actually waited
-      .sort(([,a], [,b]) => b.totalWaitingMinutes - a.totalWaitingMinutes)
+      .sort(([, a], [, b]) => b.totalWaitingMinutes - a.totalWaitingMinutes)
       .slice(0, 10);
-    
+
     if (sortedUsers.length === 0) {
       await interaction.editReply({
         embeds: [{
@@ -1019,7 +1027,7 @@ async function handleWaitboardCommand(interaction) {
       });
       return;
     }
-    
+
     // Create leaderboard embed
     const leaderboardText = sortedUsers.map(([userId, stats], index) => {
       const user = client.users.cache.get(userId);
@@ -1027,17 +1035,17 @@ async function handleWaitboardCommand(interaction) {
       const hours = Math.floor(stats.totalWaitingMinutes / 60);
       const minutes = stats.totalWaitingMinutes % 60;
       const timeStr = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-      
+
       const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
-      
+
       return `${medal} **${displayName}** - ${timeStr} (${stats.incidents.length} incidents)`;
     }).join('\n');
-    
+
     const totalWaitingTime = sortedUsers.reduce((sum, [, stats]) => sum + stats.totalWaitingMinutes, 0);
     const totalHours = Math.floor(totalWaitingTime / 60);
     const totalMinutes = totalWaitingTime % 60;
     const totalTimeStr = totalHours > 0 ? `${totalHours}h ${totalMinutes}m` : `${totalMinutes}m`;
-    
+
     await interaction.editReply({
       embeds: [{
         color: 0x4CAF50,
@@ -1070,6 +1078,211 @@ async function handleWaitboardCommand(interaction) {
     await interaction.editReply({
       content: '❌ Error generating waitboard. Please try again later.'
     });
+  }
+}
+
+// Console command system for manual message sending
+async function setupConsoleCommands() {
+  const readline = await import('readline');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  console.log('\n🤖 Console Commands Available:');
+  console.log('  send <channelId> <message>  - Send message to specific channel');
+  console.log('  sendembed <channelId> <title> <description> <color> - Send embed message');
+  console.log('  listchannels - List all channels in all guilds');
+  console.log('  listguilds - List all guilds the bot is in');
+  console.log('  listusers <guildId> - List users in a specific guild');
+  console.log('  help - Show this help message');
+  console.log('  exit - Exit the bot\n');
+
+  rl.on('line', async (input) => {
+    const args = input.trim().split(' ');
+    const command = args[0].toLowerCase();
+
+    try {
+      switch (command) {
+        case 'send':
+          if (args.length < 3) {
+            console.log('❌ Usage: send <channelId> <message>');
+            break;
+          }
+          const channelId = args[1];
+          const message = args.slice(2).join(' ');
+          await sendMessageToChannel(channelId, message);
+          break;
+
+        case 'sendembed':
+          if (args.length < 5) {
+            console.log('❌ Usage: sendembed <channelId> <title> <description> <color>');
+            console.log('   Colors: red, green, blue, yellow, purple, orange, pink, gray');
+            break;
+          }
+          const embedChannelId = args[1];
+          const title = args[2];
+          const description = args[3];
+          const color = args[4].toLowerCase();
+          await sendEmbedToChannel(embedChannelId, title, description, color);
+          break;
+
+        case 'listchannels':
+          await listAllChannels();
+          break;
+
+        case 'listguilds':
+          await listAllGuilds();
+          break;
+
+        case 'listusers':
+          if (args.length < 2) {
+            console.log('❌ Usage: listusers <guildId>');
+            break;
+          }
+          const guildId = args[1];
+          await listGuildUsers(guildId);
+          break;
+
+        case 'help':
+          console.log('\n🤖 Console Commands:');
+          console.log('  send <channelId> <message>  - Send message to specific channel');
+          console.log('  sendembed <channelId> <title> <description> <color> - Send embed message');
+          console.log('  listchannels - List all channels in all guilds');
+          console.log('  listguilds - List all guilds the bot is in');
+          console.log('  listusers <guildId> - List users in a specific guild');
+          console.log('  help - Show this help message');
+          console.log('  exit - Exit the bot\n');
+          break;
+
+        case 'exit':
+          console.log('👋 Shutting down bot...');
+          process.exit(0);
+          break;
+
+        default:
+          console.log('❌ Unknown command. Type "help" for available commands.');
+      }
+    } catch (error) {
+      console.error('❌ Error executing command:', error.message);
+    }
+  });
+}
+
+async function sendMessageToChannel(channelId, message) {
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel) {
+      console.log('❌ Channel not found!');
+      return;
+    }
+    if (!channel.isTextBased()) {
+      console.log('❌ Channel is not a text channel!');
+      return;
+    }
+
+    await channel.send(message);
+    console.log(`✅ Message sent to #${channel.name} in ${channel.guild.name}`);
+  } catch (error) {
+    console.error('❌ Error sending message:', error.message);
+  }
+}
+
+async function sendEmbedToChannel(channelId, title, description, color) {
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel) {
+      console.log('❌ Channel not found!');
+      return;
+    }
+    if (!channel.isTextBased()) {
+      console.log('❌ Channel is not a text channel!');
+      return;
+    }
+
+    const colorMap = {
+      red: '#FF0000',
+      green: '#00FF00',
+      blue: '#0000FF',
+      yellow: '#FFFF00',
+      purple: '#800080',
+      orange: '#FFA500',
+      pink: '#FFC0CB',
+      gray: '#808080'
+    };
+
+    const embedColor = colorMap[color] || '#5865F2';
+
+    const embed = new EmbedBuilder()
+      .setTitle(title)
+      .setDescription(description)
+      .setColor(embedColor)
+      .setTimestamp();
+
+    await channel.send({ embeds: [embed] });
+    console.log(`✅ Embed sent to #${channel.name} in ${channel.guild.name}`);
+  } catch (error) {
+    console.error('❌ Error sending embed:', error.message);
+  }
+}
+
+async function listAllChannels() {
+  try {
+    console.log('\n📋 All Channels:');
+    for (const [guildId, guild] of client.guilds.cache) {
+      console.log(`\n🏰 ${guild.name} (${guildId})`);
+      for (const [channelId, channel] of guild.channels.cache) {
+        if (channel.isTextBased()) {
+          console.log(`  📝 #${channel.name} (${channelId})`);
+        }
+      }
+    }
+    console.log('');
+  } catch (error) {
+    console.error('❌ Error listing channels:', error.message);
+  }
+}
+
+async function listAllGuilds() {
+  try {
+    console.log('\n🏰 All Guilds:');
+    for (const [guildId, guild] of client.guilds.cache) {
+      console.log(`  ${guild.name} (${guildId}) - ${guild.memberCount} members`);
+    }
+    console.log('');
+  } catch (error) {
+    console.error('❌ Error listing guilds:', error.message);
+  }
+}
+
+async function listGuildUsers(guildId) {
+  try {
+    const guild = await client.guilds.fetch(guildId);
+    if (!guild) {
+      console.log('❌ Guild not found!');
+      return;
+    }
+
+    console.log(`\n👥 Users in ${guild.name}:`);
+
+    // Fetch all members (this might take a moment for large servers)
+    const members = await guild.members.fetch();
+
+    members.forEach(member => {
+      const status = member.presence?.status || 'offline';
+      const statusEmoji = {
+        online: '🟢',
+        idle: '🟡',
+        dnd: '🔴',
+        offline: '⚫'
+      }[status] || '⚫';
+
+      console.log(`  ${statusEmoji} ${member.user.username} (${member.user.id}) - ${member.user.tag}`);
+    });
+
+    console.log(`\nTotal: ${members.size} members\n`);
+  } catch (error) {
+    console.error('❌ Error listing guild users:', error.message);
   }
 }
 
