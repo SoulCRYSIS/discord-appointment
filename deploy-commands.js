@@ -38,6 +38,41 @@ const commands = [
           { name: 'This Week', value: 'week' }
         )
     )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('waitboard')
+    .setDescription('Show waiting time leaderboard (most patient players)')
+    .addStringOption(option =>
+      option.setName('period')
+        .setDescription('Time period')
+        .setRequired(false)
+        .addChoices(
+          { name: 'All Time', value: 'all' },
+          { name: 'This Month', value: 'month' },
+          { name: 'This Week', value: 'week' }
+        )
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('harass')
+    .setDescription('Harass someone who is taking a break or didn\'t plan for party')
+    .addUserOption(option =>
+      option.setName('user')
+        .setDescription('User to harass')
+        .setRequired(true)
+    )
+    .addChannelOption(option =>
+      option.setName('voice_channel')
+        .setDescription('Voice channel where people are waiting')
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option.setName('interval')
+        .setDescription('Insult interval in minutes (default: 1)')
+        .setRequired(false)
+        .setMinValue(1)
+        .setMaxValue(60)
+    )
     .toJSON()
 ];
 

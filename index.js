@@ -37,6 +37,9 @@ const client = new Client({
 // Simple in-memory storage
 const appointments = new Map();
 
+// Store active harassment sessions by message ID
+const harassmentSessions = new Map();
+
 // Persistent storage for user statistics
 const STATS_FILE = path.join(process.cwd(), 'data', 'user-stats.json');
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -56,7 +59,7 @@ function loadStats() {
   return {};
 }
 
-function saveStats(stats) {
+function saveStats(stats = userStats) {
   try {
     fs.writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2));
   } catch (error) {
@@ -64,13 +67,16 @@ function saveStats(stats) {
   }
 }
 
-let userStats = loadStats(); // { userId: { totalWastedMinutes: 0, incidents: [], weeklyWaste: 0, monthlyWaste: 0 } }
+let userStats = loadStats();
 
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Bot is ready! Logged in as ${client.user.tag}`);
 
   // Start the appointment reminder scheduler
   startAppointmentScheduler();
+
+  // Start the harassment insult scheduler
+  startHarassmentInsultScheduler();
 
   // Setup console commands
   await setupConsoleCommands();
@@ -117,6 +123,47 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
           }
         }
       }
+
+      // Check harassment sessions
+      for (const [sessionId, session] of harassmentSessions) {
+        if (session.targetUserId === userId && !session.ended) {
+          // Target user joined a voice channel - end harassment
+          session.ended = true;
+          session.endTime = Date.now();
+          const minutesElapsed = Math.floor((session.endTime - session.startTime) / 60000);
+          const totalWastedMinutes = minutesElapsed * session.waitingUserCount; // Multiply by number of people waiting
+
+          // Update the harassment message
+          try {
+            const channel = await client.channels.fetch(session.channelId);
+            if (channel && channel.isTextBased()) {
+              const message = await channel.messages.fetch(session.messageId);
+
+              const embed = new EmbedBuilder()
+                .setColor('#00FF00')
+                .setTitle('✅ WOOOOOOOOOOOOOOOHHHHHHHHHHHHHH! ✅')
+                .setDescription(`**${session.targetUsername}** finally joined voice after **${minutesElapsed} minutes**!`)
+                .addFields(
+                  { name: '💸 Total Wasted', value: `${totalWastedMinutes} minutes`, inline: true }
+                )
+                .setThumbnail(newState.member.user.displayAvatarURL())
+                .setTimestamp();
+
+              await message.edit({
+                embeds: [embed],
+                components: []
+              });
+            }
+          } catch (error) {
+            console.error('Error updating harassment message:', error);
+          }
+
+          // Save to user stats for each waiting person
+          await saveHarassmentStatsForAll(session, 'joined_voice', minutesElapsed, totalWastedMinutes);
+
+          console.log(`✅ Harassment session ended - ${session.targetUsername} joined voice after ${minutesElapsed} minutes (${totalWastedMinutes} total minutes wasted)`);
+        }
+      }
     }
   } catch (error) {
     console.error('Error in voice state update:', error);
@@ -159,6 +206,17 @@ client.on(Events.InteractionCreate, async interaction => {
           }
         }
         await handleWaitboardCommand(interaction);
+      } else if (interaction.commandName === 'harass') {
+        // Check if already deferred/replied to prevent double-defer
+        if (!interaction.deferred && !interaction.replied) {
+          try {
+            await interaction.deferReply();
+          } catch (err) {
+            console.error('Failed to defer harass interaction:', err);
+            return;
+          }
+        }
+        await handleHarassCommand(interaction);
       }
     } else if (interaction.isButton()) {
       // Defer IMMEDIATELY before calling handler
@@ -171,7 +229,12 @@ client.on(Events.InteractionCreate, async interaction => {
           return;
         }
       }
-      await handleButtonClick(interaction);
+
+      if (interaction.customId.startsWith('harass_')) {
+        await handleHarassButton(interaction);
+      } else {
+        await handleButtonClick(interaction);
+      }
     }
   } catch (error) {
     console.error('Error in interaction handler:', error);
@@ -484,7 +547,7 @@ async function showLeaderboard(interaction, appointment) {
 
       // Update user stats
       if (!userStats[person.userId]) {
-        userStats[person.userId] = { totalWastedMinutes: 0, incidents: [], weeklyWaste: 0, monthlyWaste: 0 };
+        userStats[person.userId] = { totalWastedMinutes: 0, incidents: [] };
       }
       userStats[person.userId].totalWastedMinutes += wastedByThisPerson;
       userStats[person.userId].incidents.push({
@@ -1283,6 +1346,286 @@ async function listGuildUsers(guildId) {
     console.log(`\nTotal: ${members.size} members\n`);
   } catch (error) {
     console.error('❌ Error listing guild users:', error.message);
+  }
+}
+
+async function handleHarassCommand(interaction) {
+  try {
+    const targetUser = interaction.options.getUser('user');
+    const voiceChannel = interaction.options.getChannel('voice_channel');
+    const interval = interaction.options.getInteger('interval') || 1; // Default to 1 minute
+
+    // Validate voice channel
+    if (!voiceChannel || voiceChannel.type !== 2) { // ChannelType.GuildVoice
+      await interaction.editReply({
+        content: '❌ Please select a valid voice channel!'
+      });
+      return;
+    }
+
+    // Check if target user is already being harassed
+    for (const [messageId, session] of harassmentSessions) {
+      if (session.targetUserId === targetUser.id && !session.ended) {
+        await interaction.editReply({
+          content: `❌ ${targetUser.username} is already being harassed! Check the previous harassment message.`
+        });
+        return;
+      }
+    }
+
+    // Get current people in the voice channel
+    const waitingUsers = [];
+    if (voiceChannel.members) {
+      for (const [userId, member] of voiceChannel.members) {
+        if (userId !== targetUser.id) { // Don't include the target user
+          waitingUsers.push({
+            userId: userId,
+            username: member.user.username,
+            displayName: nameMapping[member.user.username] || member.user.username
+          });
+        }
+      }
+    }
+
+    if (waitingUsers.length === 0) {
+      await interaction.editReply({
+        content: '❌ No one is waiting in that voice channel!'
+      });
+      return;
+    }
+
+    // Create harassment embed
+    const embed = new EmbedBuilder()
+      .setColor('#FF6B6B')
+      .setTitle('🚨 HURRY UP! 🚨')
+      .setDescription(`${targetUser} - **${waitingUsers.length} people** are waiting for you!`)
+      .setThumbnail(targetUser.displayAvatarURL())
+      .setTimestamp();
+
+    // Create give up button
+    const row = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(`harass_giveup_${targetUser.id}`)
+          .setLabel('Give Up')
+          .setStyle(ButtonStyle.Danger)
+          .setEmoji('🏳️')
+      );
+
+    const response = await interaction.editReply({
+      embeds: [embed],
+      components: [row]
+    });
+
+    // Store harassment session
+    const sessionId = response.id;
+    harassmentSessions.set(sessionId, {
+      targetUserId: targetUser.id,
+      targetUsername: targetUser.username,
+      voiceChannelId: voiceChannel.id,
+      voiceChannelName: voiceChannel.name,
+      startTime: Date.now(),
+      ended: false,
+      endTime: null,
+      wastedMinutes: 0,
+      messageId: sessionId,
+      channelId: interaction.channelId,
+      guildId: interaction.guildId,
+      lastInsultMinute: 0, // Track when we last sent an insult
+      waitingUsers: waitingUsers, // Track who is waiting
+      waitingUserCount: waitingUsers.length, // Track number of people waiting
+      insultInterval: interval // Track insult interval in minutes
+    });
+
+    console.log(`🚨 Started harassment session for ${targetUser.username} - ${waitingUsers.length} people waiting in ${voiceChannel.name} (insults every ${interval} minute${interval > 1 ? 's' : ''})`);
+
+  } catch (error) {
+    console.error('Error in harass command:', error);
+    await interaction.editReply({
+      content: '❌ Error starting harassment session. Please try again later.'
+    });
+  }
+}
+
+async function handleHarassButton(interaction) {
+  try {
+    const [action, targetUserId] = interaction.customId.split('_').slice(1);
+
+    if (action === 'giveup') {
+      // Find the harassment session
+      let session = null;
+      for (const [messageId, sess] of harassmentSessions) {
+        if (sess.targetUserId === targetUserId && !sess.ended) {
+          session = sess;
+          break;
+        }
+      }
+
+      if (!session) {
+        await interaction.followUp({
+          content: '❌ Harassment session not found!',
+          flags: 64 // Ephemeral
+        });
+        return;
+      }
+
+      // End the harassment session
+      session.ended = true;
+      session.endTime = Date.now();
+      const minutesElapsed = Math.floor((session.endTime - session.startTime) / 60000);
+      const totalWastedMinutes = minutesElapsed * session.waitingUserCount; // Multiply by number of people waiting
+
+      // Update the message
+      const embed = new EmbedBuilder()
+        .setColor('#FFA500')
+        .setTitle('🏳️ GAVE UP! 🏳️')
+        .setDescription(`<@${session.targetUserId}>\nmade **${session.waitingUserCount}** high-value population wait for **${minutesElapsed}** fucking minutes!`)
+        .addFields(
+          { name: '💸 Total Wasted', value: `${totalWastedMinutes} minutes`, inline: true }
+        )
+        .setTimestamp();
+
+      await interaction.editReply({
+        embeds: [embed],
+        components: []
+      });
+
+      // Save to user stats for each waiting person
+      await saveHarassmentStatsForAll(session, 'gave_up', minutesElapsed, totalWastedMinutes);
+
+      console.log(`🏳️ Harassment session ended - gave up after ${minutesElapsed} minutes (${totalWastedMinutes} total minutes wasted)`);
+    }
+
+  } catch (error) {
+    console.error('Error in harass button handler:', error);
+    await interaction.followUp({
+      content: '❌ Error processing harassment action.',
+      flags: 64 // Ephemeral
+    });
+  }
+}
+
+
+async function saveHarassmentStatsForAll(session, endReason, minutesElapsed, totalWastedMinutes) {
+  try {
+    // Save stats for the target user (they wasted everyone's time)
+    if (!userStats[session.targetUserId]) {
+      userStats[session.targetUserId] = { totalWastedMinutes: 0, incidents: [] };
+    }
+
+    userStats[session.targetUserId].totalWastedMinutes += totalWastedMinutes;
+    userStats[session.targetUserId].incidents.push({
+      date: new Date().toISOString(),
+      wastedMinutes: totalWastedMinutes,
+      lateMinutes: 0,
+      waitingMinutes: 0,
+      game: `Harassment (${endReason}) - ${session.waitingUserCount} people waiting`,
+      harassmentSession: true
+    });
+
+    // Save stats for each waiting person (they waited for the target)
+    for (const waitingUser of session.waitingUsers) {
+      if (!userStats[waitingUser.userId]) {
+        userStats[waitingUser.userId] = { totalWastedMinutes: 0, incidents: [] };
+      }
+
+      // Each waiting person waited for the target user
+      userStats[waitingUser.userId].totalWastedMinutes += minutesElapsed; // Individual waiting time
+      userStats[waitingUser.userId].incidents.push({
+        date: new Date().toISOString(),
+        wastedMinutes: 0, // They didn't waste time, they waited
+        lateMinutes: 0,
+        waitingMinutes: minutesElapsed, // Time they waited
+        game: `Waiting for ${session.targetUsername} (${endReason})`,
+        harassmentSession: true
+      });
+    }
+
+    // Save to file
+    await saveStats();
+
+    console.log(`💾 Saved harassment stats: ${totalWastedMinutes} total min wasted, ${minutesElapsed} min per person (${session.waitingUserCount} people)`);
+  } catch (error) {
+    console.error('Error saving harassment stats for all:', error);
+  }
+}
+
+function startHarassmentInsultScheduler() {
+  // Run every minute to check for harassment sessions
+  cron.schedule('* * * * *', async () => {
+    try {
+      const now = Date.now();
+
+      for (const [sessionId, session] of harassmentSessions) {
+        if (session.ended) continue;
+
+        const minutesElapsed = Math.floor((now - session.startTime) / 60000);
+
+        // Send insult based on custom interval
+        if (minutesElapsed > 0 && minutesElapsed % session.insultInterval === 0) {
+          // Check if we already sent an insult for this interval
+          if (!session.lastInsultMinute || session.lastInsultMinute !== minutesElapsed) {
+            session.lastInsultMinute = minutesElapsed;
+
+            try {
+              const channel = await client.channels.fetch(session.channelId);
+              if (channel && channel.isTextBased()) {
+                const insult = await generateHarassmentInsult(session.targetUsername, minutesElapsed);
+
+                await channel.send({
+                  content: `<@${session.targetUserId}>\n${insult}`,
+                });
+
+                console.log(`🚨 Sent harassment insult to ${session.targetUsername} after ${minutesElapsed} minutes`);
+              }
+            } catch (error) {
+              console.error('Error sending harassment insult:', error);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error in harassment insult scheduler:', error);
+    }
+  });
+
+  console.log('🚨 Harassment insult scheduler started - checking every minute');
+}
+
+async function generateHarassmentInsult(username, minutesElapsed) {
+  const name = nameMapping[username] || username;
+  try {
+    if (!process.env.OPENAI_API_KEY) {
+      // Fallback insults if no OpenAI key
+      const fallbackInsults = [
+        `**${name}**! Stop wasting everyone's time! We've been waiting for ${minutesElapsed} minutes!`,
+        `**${name}**! Get your ass in voice chat! ${minutesElapsed} minutes of waiting is enough!`,
+        `**${name}**! Are you dead? Because you're wasting ${minutesElapsed} minutes of our lives!`,
+        `**${name}**! Hurry the fuck up! We're not your servants waiting for you!`,
+        `**${name}**! ${minutesElapsed} minutes and counting! Stop being so selfish!`
+      ];
+      return fallbackInsults[Math.floor(Math.random() * fallbackInsults.length)];
+    }
+
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-5",
+      messages: [
+        {
+          role: "user",
+          content: `Generate a really impatient, aggressive and insulting paragraph in Thai (using street language like "ไอ้สัส", "มึง", "กู", "ส้นตีน", "แม่มึง") to make ${name} hurry up, everyone has been waiting for ${minutesElapsed} minutes. Make it funny but harsh. Keep it around 3-4 sentences.`
+        }
+      ],
+    });
+
+    return response.choices[0].message.content;
+  } catch (error) {
+    console.error('Error generating harassment insult:', error);
+    // Fallback insult
+    return `**${username}**! Stop wasting everyone's time! We've been waiting for ${minutesElapsed} minutes!`;
   }
 }
 
