@@ -1353,7 +1353,7 @@ async function handleHarassCommand(interaction) {
   try {
     const targetUser = interaction.options.getUser('user');
     const voiceChannel = interaction.options.getChannel('voice_channel');
-    const interval = interaction.options.getInteger('interval') || 1; // Default to 1 minute
+    const interval = interaction.options.getInteger('interval') || 5; // Default to 1 minute
 
     // Validate voice channel
     if (!voiceChannel || voiceChannel.type !== 2) { // ChannelType.GuildVoice

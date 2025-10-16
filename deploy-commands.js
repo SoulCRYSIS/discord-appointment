@@ -68,7 +68,7 @@ const commands = [
     )
     .addIntegerOption(option =>
       option.setName('interval')
-        .setDescription('Insult interval in minutes (default: 1)')
+        .setDescription('Insult interval in minutes (default: 5)')
         .setRequired(false)
         .setMinValue(1)
         .setMaxValue(60)
