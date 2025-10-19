@@ -126,8 +126,8 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
 
       // Check harassment sessions
       for (const [sessionId, session] of harassmentSessions) {
-        if (session.targetUserId === userId && !session.ended) {
-          // Target user joined a voice channel - end harassment
+        if (session.targetUserId === userId && !session.ended && newState.channelId === session.voiceChannelId) {
+          // Target user joined the SPECIFIC voice channel being tracked - end harassment
           session.ended = true;
           session.endTime = Date.now();
           const minutesElapsed = Math.floor((session.endTime - session.startTime) / 60000);
@@ -1529,8 +1529,7 @@ async function saveHarassmentStatsForAll(session, endReason, minutesElapsed, tot
         userStats[waitingUser.userId] = { totalWastedMinutes: 0, incidents: [] };
       }
 
-      // Each waiting person waited for the target user
-      userStats[waitingUser.userId].totalWastedMinutes += minutesElapsed; // Individual waiting time
+      // Each waiting person waited for the target user - only add to waitingMinutes, not totalWastedMinutes
       userStats[waitingUser.userId].incidents.push({
         date: new Date().toISOString(),
         wastedMinutes: 0, // They didn't waste time, they waited
